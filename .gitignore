@@ -8,16 +8,19 @@ __pycache__/
 # Database
 *.db
 
-# Images
+# Data — never commit images!
+data/
 feedback_images/
-plantsnap/herbs/
 
 # Mac
 .DS_Store
 
-# MLflow
+# MLflow runs
 mlruns/
 
 # CoreML model (too large for GitHub)
 *.mlpackage
 *.mlmodel
+
+# API keys
+.env
