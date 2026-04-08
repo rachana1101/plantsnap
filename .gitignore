@@ -1,0 +1,23 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pth
+.env
+
+# Database
+*.db
+
+# Images
+feedback_images/
+plantsnap/herbs/
+
+# Mac
+.DS_Store
+
+# MLflow
+mlruns/
+
+# CoreML model (too large for GitHub)
+*.mlpackage
+*.mlmodel
