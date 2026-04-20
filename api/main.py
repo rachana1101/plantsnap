@@ -238,7 +238,7 @@ def get_stats(db: Session = Depends(get_db)):
     return {
         "total_feedback":   total,
         "images_collected": with_images,
-        "retrain_ready":    retrain_ready,  # ← NEW!
+        "retrain_ready":    retrain_ready,  
         "retrain_message":  "🎯 Ready to retrain!" 
                             if retrain_ready 
                             else f"Need {100 - with_images} more images"

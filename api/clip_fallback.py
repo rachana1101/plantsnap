@@ -33,7 +33,7 @@ model.eval()
 
 from pathlib import Path
 
-DATA_DIR = Path(__file__).parent.parent.parent / "data" / "raw"
+DATA_DIR = Path(__file__).parent.parent / "data" / "raw"
 
 def load_herb_names(data_dir: Path) -> list[str]:
     herbs = sorted([
