@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 fastapi
 uvicorn[standard]
 sqlalchemy
@@ -8,3 +9,15 @@ numpy
 opencv-python-headless
 torch --index-url https://download.pytorch.org/whl/cpu
 git+https://github.com/openai/CLIP.git
+=======
+fastapi
+uvicorn[standard]
+sqlalchemy
+boto3
+python-multipart
+Pillow
+numpy
+opencv-python-headless
+torch --index-url https://download.pytorch.org/whl/cpu
+git+https://github.com/openai/CLIP.git
+>>>>>>> main
