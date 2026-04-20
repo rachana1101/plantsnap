@@ -2,7 +2,12 @@ from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
 from pathlib import Path
 from datetime import datetime
-from clip_fallback import clip_identify
+try:
+    from clip_fallback import clip_identify
+    CLIP_AVAILABLE = True
+except ImportError:
+    CLIP_AVAILABLE = False
+    print("⚠️ CLIP not available — /clip endpoint disabled")
 import tempfile
 import base64
 import os
@@ -247,7 +252,9 @@ def get_stats(db: Session = Depends(get_db)):
 @app.post("/clip")
 async def clip_endpoint(image_base64: str):
     """Fallback when ResNet confidence < 0.5"""
-    # Decode base64 image to temp file
+    if not CLIP_AVAILABLE:
+        return {"error": "CLIP not available on this server"}
+    
     image_bytes = base64.b64decode(image_base64)
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
         f.write(image_bytes)

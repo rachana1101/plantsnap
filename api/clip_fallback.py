@@ -25,100 +25,66 @@
 import torch
 import clip
 from PIL import Image
-import numpy as np
-
-device = "mps" if torch.backends.mps.is_available() else "cpu"
-model, preprocess = clip.load("ViT-B/32", device=device)
-model.eval()
-
 from pathlib import Path
 
-DATA_DIR = Path(__file__).parent.parent / "data" / "raw"
+# Don't load anything yet — wait until first call
+_model = None
+_preprocess = None
+_text_features = None
+_herb_names = None
 
-def load_herb_names(data_dir: Path) -> list[str]:
-    herbs = sorted([
-        d.name.replace("_", " ").replace("-", " ")
-        for d in data_dir.iterdir()
-        if d.is_dir() and not d.name.startswith(".")
-    ])
-    print(f"✅ Loaded {len(herbs)} herb classes")
-    return herbs
+def _load_clip():
+    """Load CLIP model lazily — only on first /clip request"""
+    global _model, _preprocess, _text_features, _herb_names
+    
+    if _model is not None:
+        return  # already loaded
+    
+    print("🔄 Loading CLIP model (first request)...")
+    device = "cpu"  # Render = CPU only
+    _model, _preprocess = clip.load("ViT-B/32", device=device)
+    _model.eval()
+    
+    # Load herb names from data folder
+    data_dir = Path(__file__).parent.parent / "data" / "raw"
+    if data_dir.exists():
+        _herb_names = sorted([
+            d.name.replace("_", " ").replace("-", " ")
+            for d in data_dir.iterdir()
+            if d.is_dir() and not d.name.startswith(".")
+        ])
+    else:
+        _herb_names = ["chamomile", "lavender", "peppermint"]
+    
+    # Encode herb names
+    text_tokens = clip.tokenize(_herb_names).to(device)
+    with torch.no_grad():
+        _text_features = _model.encode_text(text_tokens)
+        _text_features /= _text_features.norm(dim=-1, keepdim=True)
+    
+    print(f"✅ CLIP loaded: {len(_herb_names)} herbs")
 
-HERB_NAMES = load_herb_names(DATA_DIR)
-
-# Encode all herb names ONCE at startup
-# This is expensive (~2 sec) so we do it once, not per request
-text_tokens = clip.tokenize(HERB_NAMES).to(device)
-with torch.no_grad():
-    text_features = model.encode_text(text_tokens)
-    text_features /= text_features.norm(dim=-1, keepdim=True)
-
-print(f"✅ Encoded {len(HERB_NAMES)} herb text vectors")
-print(f"   Shape: {text_features.shape}")
-
-
-# preprocess(Image.open(...))
-#   → loads image, resizes to 224x224, normalises
-
-# model.encode_image(image)
-#   → converts image to 512-dim vector
-
-# image_features @ text_features.T
-#   → dot product of image vs ALL 71 herbs
-#   → returns 71 similarity scores
-
-# argsort(descending=True)[:3]
-#   → top 3 most similar herbs
 def clip_identify(image_path: str) -> dict:
-    """When ResNet isn't sure, ask CLIP."""
-    image = preprocess(Image.open(image_path)).unsqueeze(0).to(device)
+    _load_clip()  # loads only on first call
+    
+    device = "cpu"
+    image = _preprocess(Image.open(image_path)).unsqueeze(0).to(device)
     
     with torch.no_grad():
-        image_features = model.encode_image(image)
+        image_features = _model.encode_image(image)
         image_features /= image_features.norm(dim=-1, keepdim=True)
-        
-        # Compare image to ALL 71 herb text vectors
-        similarities = (image_features @ text_features.T).squeeze()
-        
-        # Top 3 matches
+        similarities = (image_features @ _text_features.T).squeeze()
         top3_idx = similarities.argsort(descending=True)[:3]
     
     results = []
     for idx in top3_idx:
         results.append({
-            "herb": HERB_NAMES[idx],
+            "herb": _herb_names[idx],
             "similarity": round(similarities[idx].item(), 4)
         })
     
-    print(f"🌿 CLIP result: {results[0]['herb']} ({results[0]['similarity']})")
     return {
         "best_match": results[0],
         "top_3": results,
         "method": "clip_zero_shot"
     }
-
-# Test on a real image from your val set
-if __name__ == "__main__":
-    import sys
-    
-    if len(sys.argv) > 1:
-        test_image = sys.argv[1]
-    else:
-        # Skip hidden files, get first herb folder
-        herb_dirs = sorted([
-            d for d in DATA_DIR.iterdir() 
-            if d.is_dir() and not d.name.startswith(".")
-        ])
-        first_herb = herb_dirs[0]
-        images = sorted([
-            f for f in first_herb.iterdir()
-            if f.suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp')
-        ])
-        test_image = str(images[0])
-    
-    print(f"\n🔍 Testing: {test_image}")
-    result = clip_identify(test_image)
-    
-    print(f"\n📊 Top 3 CLIP matches:")
-    for r in result["top_3"]:
-        print(f"   {r['herb']:30s}  {r['similarity']:.4f}")
