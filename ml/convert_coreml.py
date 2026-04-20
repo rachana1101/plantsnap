@@ -51,21 +51,15 @@ import torch.nn.functional as F
 # (alphabetical order). Index 0 = first folder alphabetically, etc.
 # ClassifierConfig uses this to attach names to output probabilities.
 CLASS_LABELS = [
-    'acanthaceae', 'ashwagandha', 'asian ginseng', 'astragalus',
-    'basil', 'birch', 'black cohosh', 'black haw', 'black pepper',
-    'black walnut', 'burdock', 'calendula', 'california poppy',
-    'catnip herb', 'chamomile', 'chaste tree', 'chickweed', 'comfrey',
-    'coriander', 'cramp bark', 'cumin', 'dandelion', 'echinacea',
-    'elder berry', 'elder berry flower', 'elecampane', 'eleuthero',
-    'fennel', 'feverfew', 'garlic', 'ginger', 'ginger root',
-    'ginko leaf', 'green tea', 'holy basil', 'hops', "lady's mantle",
-    'lavender', 'lemon balm', 'licorice root', 'linden', 'meadowsweet',
-    'motherwort', 'mullein', 'nettle', 'nutmeg', 'oak', 'orange',
-    'oregano', 'passionflower', 'peppermint', 'plantain leaf',
-    'raspberry', 'red clover', 'reishi', 'rosemary', 'sage',
-    'saw palmetto', 'shepherd\'s purse', 'shiitake', 'skullcap',
-    'spilanthes', 'st. john\'s wort', 'thyme', 'tulsi', 'turmeric',
-    'valerian', 'vervain', 'white pine', 'wild yam'  # ← double-check 'yarrow' is in your dataset
+    "acanthaceae", "ashwagandha", "asian ginseng", "astragalus", "basil", "birch", "black cohosh", 
+    "black haw", "black pepper", "black walnut", "burdock", "calendula", "california poppy", "catnip",
+    "chamomile", "chaste tree tree", "chickweed", "comfrey", "coriander", "cramp bark", "cumin", "dandelion",
+    "echinacea", "elder berry", "elder berry flower", "elecampane", "eleuthero", "fennel", "feverfew",
+    "garlic", "ginger", "ginger root", "ginko leaf", "green tea", "holy basil tulsi", "hops", "lady's mantle",
+    "lavendar", "lemon balm", "licorice root", "linden", "meadowsweet", "motherwort", "mullein", "nettle", "nutmeg",
+    "oak", "oat", "orange", "oregano", "passionflower", "peppermint", "plantain leaf", "raspberry", "red clover",
+    "reishi", "rosemary", "sage", "saw palmetto", "sheperd's purse", "shiitake", "skullcap", "splilanthes", "st. john's wort",
+    "thyme", "tulsi", "turmeric", "valerian", "vervain", "white pine", "wild yam"
 ]
 
 print(f"Total classes: {len(CLASS_LABELS)}")  # should print 70
@@ -313,7 +307,7 @@ backbone = models.resnet18(weights=None)
 # Otherwise load_state_dict will CRASH — wrong shape! ❌
 # Training fc:    nn.Linear(512, 70) ← saved these weights
 # Conversion fc:  nn.Linear(512, 70) ← must match to load them ✅
-backbone.fc = nn.Linear(512, 70)
+backbone.fc = nn.Linear(512, 71)
 
 # Line 3: Load YOUR trained herb weights
 # torch.load()          → reads my_herbs_model.pth from disk
@@ -324,7 +318,7 @@ backbone.fc = nn.Linear(512, 70)
 # load_state_dict()     → stuffs the 51,000 trained weights into the empty backbone
 #                         {'fc.weight': tensor([[0.003, 0.012...]]),
 #                          'fc.bias':   tensor([0.001, 0.002...])}
-backbone.load_state_dict(torch.load('my_herbs_model.pth', map_location='cpu'))
+backbone.load_state_dict(torch.load('my_herbs_best.pth', map_location='cpu'))
 
 
 # =============================================================================
@@ -465,6 +459,6 @@ mlmodel = ct.convert(
 #   ✅ Output specification (70 herb probabilities with names)
 #   ✅ Zero extra code needed in iOS app
 # Drag into Xcode → works immediately 🎯
-mlmodel.save('my_herbs.mlpackage')
+mlmodel.save('plantsnap_v1.mlpackage')
 print("✅ iOS ready: my_herbs.mlpackage (Drag to Xcode!)")
 
