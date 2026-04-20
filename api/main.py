@@ -2,6 +2,8 @@ from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
 from pathlib import Path
 from datetime import datetime
+from clip_fallback import clip_identify
+import tempfile
 import base64
 import os
 import boto3
@@ -241,3 +243,15 @@ def get_stats(db: Session = Depends(get_db)):
                             if retrain_ready 
                             else f"Need {100 - with_images} more images"
     }
+
+@app.post("/clip")
+async def clip_endpoint(image_base64: str):
+    """Fallback when ResNet confidence < 0.5"""
+    # Decode base64 image to temp file
+    image_bytes = base64.b64decode(image_base64)
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+        f.write(image_bytes)
+        temp_path = f.name
+    
+    result = clip_identify(temp_path)
+    return result
