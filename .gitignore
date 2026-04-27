@@ -21,6 +21,7 @@ mlruns/
 # CoreML model (too large for GitHub)
 *.mlpackage
 *.mlmodel
+*.pt
 
 # API keys
 .env
