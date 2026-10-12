@@ -3,11 +3,12 @@ from sqlalchemy.orm import Session
 from pathlib import Path
 from datetime import datetime
 try:
-    from clip_fallback import clip_identify
+    from clip_fallback import clip_identify, is_plant
     CLIP_AVAILABLE = True
 except ImportError:
     CLIP_AVAILABLE = False
     print("⚠️ CLIP not available — /clip endpoint disabled")
+
 import tempfile
 import base64
 import os
@@ -116,11 +117,28 @@ def submit_feedback(
     s3_key     = None
 
     if feedback.image_base64 and feedback.confidence < CONFIDENCE_THRESHOLD:
-        log.info(f"📸 Saving image — confidence below threshold")
-        local_path, s3_key = save_image(
-            feedback.image_id,
-            feedback.image_base64
-        )
+        plant_ok = True  # if CLIP isn't available, don't block saving
+        if CLIP_AVAILABLE:
+            tmp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+                    f.write(base64.b64decode(feedback.image_base64))
+                    tmp_path = f.name
+                check = is_plant(tmp_path)
+                plant_ok = check["is_plant"]
+                log.info(f"🌱 Plant check: {check['plant_score']:.2f} "
+                         f"({check['best_prompt']}) → {'pass' if plant_ok else 'REJECT'}")
+            except Exception as e:
+                log.error(f"⚠️ Plant check failed, saving anyway: {e}")
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+
+        if plant_ok:
+            log.info("📸 Saving image — confidence below threshold, plant check passed")
+            local_path, s3_key = save_image(feedback.image_id, feedback.image_base64)
+        else:
+            log.info("🚫 Image not saved — not a plant")
 
     db_feedback = models.Feedback(
         image_id       = feedback.image_id,
