@@ -24,8 +24,10 @@
 
 import torch
 import clip
+import os
 from PIL import Image
 from pathlib import Path
+
 
 # Don't load anything yet — wait until first call
 _model = None
@@ -33,9 +35,29 @@ _preprocess = None
 _text_features = None
 _herb_names = None
 
+_plant_text_features = None
+_num_plant_prompts = 0
+
+PLANT_PROMPTS = [
+    "a photo of a plant",
+    "a photo of green leaves",
+    "a photo of a flower",
+    "a photo of an herb",
+]
+NON_PLANT_PROMPTS = [
+    "a screenshot of a phone screen",
+    "a photo of a person",
+    "a photo of food on a plate",
+    "a photo of an object indoors",
+    "a photo of a car or street",
+    "a photo of an animal",
+]
+
+PLANT_THRESHOLD = float(os.getenv("PLANT_THRESHOLD", "0.5"))
+
 def _load_clip():
     """Load CLIP model lazily — only on first /clip request"""
-    global _model, _preprocess, _text_features, _herb_names
+    global _model, _preprocess, _text_features, _herb_names, _plant_text_features, _num_plant_prompts
     
     if _model is not None:
         return  # already loaded
@@ -61,6 +83,14 @@ def _load_clip():
     with torch.no_grad():
         _text_features = _model.encode_text(text_tokens)
         _text_features /= _text_features.norm(dim=-1, keepdim=True)
+
+    # Encode plant / non-plant prompts once
+    prompts = PLANT_PROMPTS + NON_PLANT_PROMPTS
+    prompt_tokens = clip.tokenize(prompts).to(device)
+    with torch.no_grad():
+        _plant_text_features = _model.encode_text(prompt_tokens)
+        _plant_text_features /= _plant_text_features.norm(dim=-1, keepdim=True)
+    _num_plant_prompts = len(PLANT_PROMPTS)        
     
     print(f"✅ CLIP loaded: {len(_herb_names)} herbs")
 
@@ -68,7 +98,7 @@ def clip_identify(image_path: str) -> dict:
     _load_clip()  # loads only on first call
     
     device = "cpu"
-    image = _preprocess(Image.open(image_path)).unsqueeze(0).to(device)
+    image = _preprocess(Image.open(image_path).convert("RGB")).unsqueeze(0).to(device)
     
     with torch.no_grad():
         image_features = _model.encode_image(image)
@@ -88,3 +118,29 @@ def clip_identify(image_path: str) -> dict:
         "top_3": results,
         "method": "clip_zero_shot"
     }
+
+def is_plant(image_path: str) -> dict:
+    _load_clip()  # loads only on first call
+
+    device = "cpu"
+    image = _preprocess(Image.open(image_path).convert("RGB")).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        image_features = _model.encode_image(image)
+        image_features /= image_features.norm(dim=-1, keepdim=True)
+
+        # Cosine similarity to every prompt, scaled the way CLIP was trained
+        logits = _model.logit_scale.exp() * (image_features @ _plant_text_features.T)
+        probs = logits.softmax(dim=-1).squeeze()
+
+    # Total probability that the image matches a "plant" prompt
+    plant_score = probs[:_num_plant_prompts].sum().item()
+    best_idx = probs.argmax().item()
+    best_prompt = (PLANT_PROMPTS + NON_PLANT_PROMPTS)[best_idx]
+
+    return {
+        "is_plant": plant_score >= PLANT_THRESHOLD,
+        "plant_score": round(plant_score, 4),
+        "best_prompt": best_prompt,   # handy in logs: why it decided
+        "threshold": PLANT_THRESHOLD,
+    }    

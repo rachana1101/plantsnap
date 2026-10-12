@@ -3,10 +3,15 @@ import json
 import sys
 import time
 
+from pathlib import Path
+
+API_DIR   = Path(__file__).parent
+DATA_DIR  = API_DIR.parent / "data" / "raw"
+RUN_CLIP_TESTS = True   # needs torch + clip installed locally
+
 # ── CONFIG ────────────────────────────────────────────
-BASE_URL = "https://computer-vision-yin8.onrender.com"
-           #https://computer-vision-yin8.onrender.com
-# BASE_URL = "http://localhost:8000"  # uncomment for local testing
+#BASE_URL = "https://computer-vision-yin8.onrender.com"           
+BASE_URL = "http://localhost:8000"  # uncomment for local testing
 
 PASS = "✅"
 FAIL = "❌"
@@ -148,6 +153,39 @@ def test_flush_db():
     test("Flush DB returns deleted counts",
          "deleted_feedback" in r.json())    
 
+def test_is_plant():
+    """Local-only: calls clip_fallback.is_plant() directly (not over HTTP)"""
+    try:
+        from clip_fallback import is_plant
+    except ImportError as e:
+        test("CLIP plant check imports", False, str(e))
+        return
+
+    # 1. A non-plant photo should be rejected
+    bus = API_DIR / "bus.jpg"
+    r = is_plant(str(bus))
+    test("is_plant returns expected keys",
+         {"is_plant", "plant_score", "best_prompt", "threshold"} <= r.keys(),
+         f"got {list(r.keys())}")
+    test("Bus photo is NOT a plant",
+         r["is_plant"] is False,
+         f"score={r['plant_score']}, best_prompt='{r['best_prompt']}'")
+
+    # 2. A real herb photo from the training data should pass
+    basil = DATA_DIR / "basil" / "Image_1.jpeg"
+    if basil.exists():
+        r = is_plant(str(basil))
+        test("Basil photo IS a plant",
+             r["is_plant"] is True,
+             f"score={r['plant_score']}, best_prompt='{r['best_prompt']}'")
+    else:
+        test("Basil test image found", False, f"missing {basil}")
+
+    # 3. Score is a probability
+    test("Plant score is between 0 and 1",
+         0.0 <= r["plant_score"] <= 1.0,
+         f"score={r['plant_score']}")    
+
 # ── RUN ALL TESTS ──────────────────────────────────────
 if __name__ == "__main__":
     print(f"\n🌿 PlantSnap API Test Suite")
@@ -164,6 +202,7 @@ if __name__ == "__main__":
     test_metrics()
     test_stats()
     test_invalid_confidence()
+    test_is_plant()
 
     print("─" * 40)
     passed = sum(results)
@@ -173,3 +212,4 @@ if __name__ == "__main__":
     # Exit with error code if any test failed
     # (useful for CI/CD pipelines!)
     sys.exit(0 if passed == total else 1)
+
