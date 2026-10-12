@@ -116,7 +116,8 @@ def submit_feedback(
     local_path = None
     s3_key     = None
 
-    if feedback.image_base64 and feedback.confidence < CONFIDENCE_THRESHOLD:
+    is_correction = feedback.correct_herb.strip().lower() != feedback.predicted_herb.strip().lower()
+    if feedback.image_base64 and (is_correction or feedback.confidence < CONFIDENCE_THRESHOLD):
         plant_ok = True  # if CLIP isn't available, don't block saving
         if CLIP_AVAILABLE:
             tmp_path = None
@@ -268,15 +269,20 @@ def get_stats(db: Session = Depends(get_db)):
     }
 
 @app.post("/clip")
-async def clip_endpoint(image_base64: str):
-    """Fallback when ResNet confidence < 0.5"""
+def clip_endpoint(req: schemas.ClipRequest):
+    """Second opinion when ResNet18 on the phone is unsure (app calls this when online)"""
     if not CLIP_AVAILABLE:
         return {"error": "CLIP not available on this server"}
-    
-    image_bytes = base64.b64decode(image_base64)
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
-        f.write(image_bytes)
-        temp_path = f.name
-    
-    result = clip_identify(temp_path)
-    return result
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            f.write(base64.b64decode(req.image_base64))
+            tmp_path = f.name
+        result = clip_identify(tmp_path)
+        log.info(f"🔍 CLIP second opinion: {result['best_match']['herb']} "
+                 f"({result['best_match']['confidence']:.2f})")
+        return result
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)

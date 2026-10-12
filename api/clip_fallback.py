@@ -25,6 +25,7 @@
 import torch
 import clip
 import os
+import json
 from PIL import Image
 from pathlib import Path
 
@@ -55,6 +56,19 @@ NON_PLANT_PROMPTS = [
 
 PLANT_THRESHOLD = float(os.getenv("PLANT_THRESHOLD", "0.5"))
 
+# Fix a few folder-name typos so CLIP reads the right word (returned labels stay unchanged)
+_NAME_FIXES = {
+    "lavendar": "lavender",
+    "splilanthes": "spilanthes",
+    "sheperd's purse": "shepherd's purse",
+    "chaste tree tree": "chaste tree",
+    "ginko leaf": "ginkgo leaf",
+    "holy basil tulsi": "holy basil",
+}
+
+def _clean_name(name: str) -> str:
+    return _NAME_FIXES.get(name, name)
+
 def _load_clip():
     """Load CLIP model lazily — only on first /clip request"""
     global _model, _preprocess, _text_features, _herb_names, _plant_text_features, _num_plant_prompts
@@ -67,19 +81,14 @@ def _load_clip():
     _model, _preprocess = clip.load("ViT-B/32", device=device)
     _model.eval()
     
-    # Load herb names from data folder
-    data_dir = Path(__file__).parent.parent / "data" / "raw"
-    if data_dir.exists():
-        _herb_names = sorted([
-            d.name.replace("_", " ").replace("-", " ")
-            for d in data_dir.iterdir()
-            if d.is_dir() and not d.name.startswith(".")
-        ])
-    else:
-        _herb_names = ["chamomile", "lavender", "peppermint"]
-    
-    # Encode herb names
-    text_tokens = clip.tokenize(_herb_names).to(device)
+    # Load the 71 herb labels shipped with the API (same names/order as the ResNet18 model)
+    names_file = Path(__file__).parent / "herb_names.json"
+    with open(names_file) as f:
+        _herb_names = json.load(f)
+
+    # CLIP matches captions better than bare words, so wrap each name in a sentence
+    herb_prompts = [f"a photo of {_clean_name(n)}, a medicinal herb or plant" for n in _herb_names]
+    text_tokens = clip.tokenize(herb_prompts).to(device)
     with torch.no_grad():
         _text_features = _model.encode_text(text_tokens)
         _text_features /= _text_features.norm(dim=-1, keepdim=True)
@@ -104,12 +113,15 @@ def clip_identify(image_path: str) -> dict:
         image_features = _model.encode_image(image)
         image_features /= image_features.norm(dim=-1, keepdim=True)
         similarities = (image_features @ _text_features.T).squeeze()
-        top3_idx = similarities.argsort(descending=True)[:3]
-    
+        # Softmax over all 71 herbs -> a probability, comparable to ResNet's confidence
+        probs = (_model.logit_scale.exp() * similarities).softmax(dim=-1)
+        top3_idx = probs.argsort(descending=True)[:3]
+
     results = []
     for idx in top3_idx:
         results.append({
             "herb": _herb_names[idx],
+            "confidence": round(probs[idx].item(), 4),
             "similarity": round(similarities[idx].item(), 4)
         })
     

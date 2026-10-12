@@ -34,3 +34,6 @@ class VersionResponse(BaseModel):
     min_app_version:  str
     update_available: bool
     model_url:        Optional[str] = None
+
+class ClipRequest(BaseModel):
+    image_base64: str
