@@ -42,6 +42,10 @@ def test_version():
          "model_version" in data)
     test("Version has update_available field",
          "update_available" in data)
+    test("Version lists model files",
+         isinstance(data.get("files"), list))
+    test("Update only offered when files exist",
+         data.get("update_available") == (len(data.get("files", [])) > 0))
 
 def test_feedback_valid():
     payload = {
@@ -110,6 +114,11 @@ def test_stats():
          "total_feedback" in data)
     test("Stats total is a number",
          isinstance(data.get("total_feedback"), int))
+    test("Stats has retrain trigger fields",
+         {"new_training_photos", "retrain_after", "retrain_ready"} <= data.keys(),
+         f"got {list(data.keys())}")
+    test("Retrain flag matches the count",
+         data.get("retrain_ready") == (data.get("new_training_photos", 0) >= data.get("retrain_after", 50)))
 
 def test_invalid_confidence():
     """Confidence must be a float"""
@@ -126,6 +135,61 @@ def test_invalid_confidence():
          r.status_code == 422,
          f"Got {r.status_code} instead of 422")
     
+
+def _photo_b64(kind):
+    """A real basil photo, optionally blurred or darkened, as base64 JPEG."""
+    import base64, cv2, numpy as np
+    img = cv2.imread(str(DATA_DIR / "basil" / "Image_1.jpeg"))
+    if kind == "blurry":
+        img = cv2.GaussianBlur(img, (0, 0), 6)
+    elif kind == "dark":
+        img = (img * 0.15).astype(np.uint8)
+    ok, buf = cv2.imencode(".jpg", img)
+    return base64.b64encode(buf.tobytes()).decode()
+
+def _correction(image_id, kind):
+    return {
+        "image_id":       image_id,
+        "predicted_herb": "sage",
+        "correct_herb":   "basil",
+        "confidence":     0.46,
+        "device_id":      "test_device",
+        "app_version":    "1.0",
+        "image_base64":   _photo_b64(kind),
+    }
+
+def test_quality_gate():
+    """Blurry and dark photos keep the feedback record but not the photo"""
+    import uuid
+    for kind in ("blurry", "dark"):
+        r = requests.post(f"{BASE_URL}/feedback", json=_correction(f"test_{kind}_{uuid.uuid4()}", kind))
+        test(f"{kind.capitalize()} photo feedback accepted", r.status_code == 200, r.text[:200])
+        test(f"{kind.capitalize()} photo is not saved",
+             r.json().get("image_status") == kind,
+             f"image_status={r.json().get('image_status')}")
+
+def test_duplicate_feedback():
+    """The offline queue can resend the same feedback; it must not be stored twice"""
+    import uuid
+    payload = _correction(f"test_dup_{uuid.uuid4()}", "sharp")
+    first  = requests.post(f"{BASE_URL}/feedback", json=payload).json()
+    second = requests.post(f"{BASE_URL}/feedback", json=payload).json()
+    test("Resent feedback returns the same record",
+         first.get("id") == second.get("id"),
+         f"first id={first.get('id')}, second id={second.get('id')}")
+    test("Resent feedback is marked duplicate",
+         second.get("image_status") == "duplicate",
+         f"image_status={second.get('image_status')}")
+
+def test_check_quality():
+    """Local-only: calls quality.check_quality() directly"""
+    import base64
+    from quality import check_quality
+    for kind, expected in (("sharp", None), ("blurry", "blurry"), ("dark", "dark")):
+        r = check_quality(base64.b64decode(_photo_b64(kind)))
+        test(f"check_quality: {kind} photo → {expected or 'ok'}",
+             r["reason"] == expected,
+             f"got {r}")
 
 def wake_up_server():
     """Ping server and wait for it to wake up"""
@@ -202,7 +266,11 @@ if __name__ == "__main__":
     test_metrics()
     test_stats()
     test_invalid_confidence()
-    test_is_plant()
+    test_quality_gate()
+    test_duplicate_feedback()
+    test_check_quality()
+    if RUN_CLIP_TESTS:
+        test_is_plant()
 
     print("─" * 40)
     passed = sum(results)

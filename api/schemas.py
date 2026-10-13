@@ -19,6 +19,7 @@ class FeedbackResponse(BaseModel):
     correct_herb:   str
     confidence:     float
     created_at:     Optional[datetime] = None 
+    image_status:   Optional[str] = None  # saved | not_needed | blurry | dark | not_plant | duplicate | unreadable | save_failed
 
     class Config:
         from_attributes = True
@@ -34,6 +35,7 @@ class VersionResponse(BaseModel):
     min_app_version:  str
     update_available: bool
     model_url:        Optional[str] = None
+    files:            list = []   # [{path, size, url}] for the model package, when one is published
 
 class ClipRequest(BaseModel):
     image_base64: str

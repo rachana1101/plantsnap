@@ -17,6 +17,7 @@ import logging
 
 import models
 import schemas
+from quality import check_quality
 from database import engine, get_db
 
 # ── Setup logging ────────────────────────────────────
@@ -113,13 +114,29 @@ def submit_feedback(
     log.info(f"   correct_herb:   {feedback.correct_herb}")
     log.info(f"   confidence:     {feedback.confidence:.2f}")
 
-    local_path = None
-    s3_key     = None
+    # Duplicate check: the app gives every photo a unique image_id, and the offline
+    # queue may resend the same feedback after a failed or timed-out request.
+    existing = db.query(models.Feedback).filter(
+        models.Feedback.image_id == feedback.image_id).first()
+    if existing:
+        log.info(f"🔁 Duplicate image_id {feedback.image_id} → returning existing record {existing.id}")
+        existing.image_status = "duplicate"
+        return existing
+
+    local_path   = None
+    s3_key       = None
+    image_status = "not_needed"
 
     is_correction = feedback.correct_herb.strip().lower() != feedback.predicted_herb.strip().lower()
     if feedback.image_base64 and (is_correction or feedback.confidence < CONFIDENCE_THRESHOLD):
-        plant_ok = True  # if CLIP isn't available, don't block saving
-        if CLIP_AVAILABLE:
+        # Gate 1: blurry or dark photos never reach the training data
+        quality = check_quality(base64.b64decode(feedback.image_base64))
+        log.info(f"🔎 Quality: sharpness {quality['sharpness']}, brightness {quality['brightness']}"
+                 f" → {'pass' if quality['ok'] else 'REJECT (' + quality['reason'] + ')'}")
+
+        # Gate 2: CLIP checks it's actually a plant
+        plant_ok = quality["ok"]  # if CLIP isn't available, don't block saving
+        if quality["ok"] and CLIP_AVAILABLE:
             tmp_path = None
             try:
                 with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
@@ -135,10 +152,15 @@ def submit_feedback(
                 if tmp_path and os.path.exists(tmp_path):
                     os.remove(tmp_path)
 
-        if plant_ok:
-            log.info("📸 Saving image — confidence below threshold, plant check passed")
+        if not quality["ok"]:
+            image_status = quality["reason"]
+            log.info(f"🚫 Image not saved — {quality['reason']}")
+        elif plant_ok:
+            log.info("📸 Saving image — correction or low confidence, quality and plant checks passed")
             local_path, s3_key = save_image(feedback.image_id, feedback.image_base64)
+            image_status = "saved" if (local_path or s3_key) else "save_failed"
         else:
+            image_status = "not_plant"
             log.info("🚫 Image not saved — not a plant")
 
     db_feedback = models.Feedback(
@@ -159,9 +181,13 @@ def submit_feedback(
     db.expire(db_feedback)
     db.refresh(db_feedback)
 
-    log.info(f"✅ Saved → id: {db_feedback.id}")
+    log.info(f"✅ Saved → id: {db_feedback.id} (image: {image_status})")
     log.info("─" * 40)
 
+    if image_status == "saved" and new_training_photos(db) == RETRAIN_AFTER:
+        log.warning(f"🎯 {RETRAIN_AFTER} new training photos since last training — ready to retrain!")
+
+    db_feedback.image_status = image_status
     return db_feedback
 
 # ── POST /metrics ─────────────────────────────────────
@@ -187,20 +213,41 @@ def submit_metric(
 
 
 # ── GET /version ──────────────────────────────────────
-# ── Model versions config ─────────────────────────────
-# Update these after each retraining run!
-MODEL_VERSION    = os.getenv("MODEL_VERSION", "1.0")
-MODEL_URL        = os.getenv("MODEL_URL", None)
-UPDATE_AVAILABLE = os.getenv("UPDATE_AVAILABLE", "false").lower() == "true"
+# Model auto-update. ml/publish_model.py uploads a new .mlpackage to
+# s3://<bucket>/models/<version>/plantsnap.mlpackage/... ; then set MODEL_VERSION
+# on Render. The app compares versions on launch and downloads the files listed
+# here (short-lived presigned S3 links), compiles the model on the phone and
+# switches to it. The model bundled with the app is always the fallback.
+MODEL_VERSION = os.getenv("MODEL_VERSION", "1.0")
+
+def model_files(version: str) -> list:
+    if not (USE_S3 and s3_client):
+        return []
+    prefix = f"models/{version}/plantsnap.mlpackage/"
+    try:
+        listing = s3_client.list_objects_v2(Bucket=S3_BUCKET, Prefix=prefix)
+    except Exception as e:
+        log.error(f"❌ Could not list model files: {e}")
+        return []
+    return [{
+        "path": obj["Key"][len(prefix):],
+        "size": obj["Size"],
+        "url":  s3_client.generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": S3_BUCKET, "Key": obj["Key"]},
+                    ExpiresIn=3600),
+    } for obj in listing.get("Contents", [])]
 
 @app.get("/version", response_model=schemas.VersionResponse)
 def get_version():
-    log.info(f"📱 Version check → current: {MODEL_VERSION}")
+    files = model_files(MODEL_VERSION)
+    log.info(f"📱 Version check → current: {MODEL_VERSION}, {len(files)} model file(s)")
     return {
         "model_version":    MODEL_VERSION,
         "min_app_version":  "1.0",
-        "update_available": UPDATE_AVAILABLE,
-        "model_url":        MODEL_URL
+        "update_available": len(files) > 0,
+        "model_url":        None,
+        "files":            files,
     }
 
 # ── GET /feedback/all ─────────────────────────────────
@@ -247,25 +294,35 @@ def flush_database(db: Session = Depends(get_db)):
         "deleted_metrics":  metrics_count
     }
 
-# Add to main.py — auto-notify when threshold hit!
+# ── Retrain trigger ───────────────────────────────────
+# After RETRAIN_AFTER new training photos (saved since the last training run),
+# the server flags that the model is ready to retrain. Training itself runs
+# offline (ml/train_herbs.py); after a run, set LAST_RETRAIN_AT to its date.
+RETRAIN_AFTER   = int(os.getenv("RETRAIN_AFTER", "50"))
+LAST_RETRAIN_AT = os.getenv("LAST_RETRAIN_AT")  # e.g. "2026-10-13", empty = count everything
+
+def new_training_photos(db: Session) -> int:
+    q = db.query(models.Feedback).filter(
+        (models.Feedback.s3_key != None) | (models.Feedback.image_path != None))
+    if LAST_RETRAIN_AT:
+        q = q.filter(models.Feedback.created_at >= datetime.fromisoformat(LAST_RETRAIN_AT))
+    return q.count()
 
 @app.get("/feedback/stats")
 def get_stats(db: Session = Depends(get_db)):
     total = db.query(models.Feedback).count()
-    with_images = db.query(models.Feedback).filter(
-        models.Feedback.s3_key != None
-    ).count()
-
-    # Retraining recommendation
-    retrain_ready = with_images >= 100
+    new_photos = new_training_photos(db)
+    retrain_ready = new_photos >= RETRAIN_AFTER
 
     return {
-        "total_feedback":   total,
-        "images_collected": with_images,
-        "retrain_ready":    retrain_ready,  
-        "retrain_message":  "🎯 Ready to retrain!" 
-                            if retrain_ready 
-                            else f"Need {100 - with_images} more images"
+        "total_feedback":      total,
+        "new_training_photos": new_photos,
+        "retrain_after":       RETRAIN_AFTER,
+        "last_retrain_at":     LAST_RETRAIN_AT,
+        "retrain_ready":       retrain_ready,
+        "retrain_message":     "🎯 Ready to retrain!"
+                               if retrain_ready
+                               else f"Need {RETRAIN_AFTER - new_photos} more training photos"
     }
 
 @app.post("/clip")
