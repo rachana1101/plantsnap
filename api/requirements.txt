@@ -1,3 +1,5 @@
+# CPU-only PyTorch: Render has no GPU, and the default (CUDA) build is far heavier
+--extra-index-url https://download.pytorch.org/whl/cpu
 fastapi
 uvicorn[standard]
 sqlalchemy
@@ -6,5 +8,6 @@ python-multipart
 Pillow
 numpy
 opencv-python-headless
-torch --index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
 git+https://github.com/openai/CLIP.git

@@ -6,8 +6,6 @@ blurred and darkened copies of the same photos (all rejected):
   brightness (mean gray, 0-255):  real photos 1st percentile 48,  darkened copies 95th pct 30
 """
 import os
-import cv2
-import numpy as np
 
 BLUR_THRESHOLD = float(os.getenv("BLUR_THRESHOLD", "30"))
 DARK_THRESHOLD = float(os.getenv("DARK_THRESHOLD", "35"))
@@ -15,6 +13,8 @@ DARK_THRESHOLD = float(os.getenv("DARK_THRESHOLD", "35"))
 
 def check_quality(image_bytes: bytes) -> dict:
     """Returns {"ok", "reason", "sharpness", "brightness"}. reason is None, "dark", "blurry" or "unreadable"."""
+    import cv2  # imported here, not at startup, to keep server boot memory low (Render free tier: 512 MB)
+    import numpy as np
     img = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
     if img is None:
         return {"ok": False, "reason": "unreadable", "sharpness": 0.0, "brightness": 0.0}
